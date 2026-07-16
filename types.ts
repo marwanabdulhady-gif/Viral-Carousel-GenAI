@@ -11,10 +11,17 @@ export interface BrandColors {
   accent: string;
 }
 
+export interface PersonalBranding {
+  name: string;
+  handle: string;
+  avatarUrl?: string; // We will use a placeholder or generic avatar for now
+  enabled: boolean;
+}
+
 export interface CarouselMetadata {
-  topic: string;
+  title: string;
   visual_style: string;
-  target_audience: string;
+  target_audience?: string;
   language: 'en' | 'ar';
   tone: string;
   aspect_ratio: '4:5' | '1:1' | '16:9';
@@ -23,19 +30,43 @@ export interface CarouselMetadata {
   character_description?: string; // Global character prompt
   character_traits?: CharacterTraits;
   brand_colors?: BrandColors;
+  personal_branding?: PersonalBranding;
+  written_post?: string;
+  character_reference_image?: string; // Base64 image
+}
+
+declare global {
+  interface Window {
+    aistudio?: {
+      hasSelectedApiKey: () => Promise<boolean>;
+      openSelectKey: () => Promise<void>;
+    };
+  }
+}
+
+export interface SlideNumberDesign {
+    show: boolean;
+    style: 'minimal' | 'circle' | 'square' | 'outline' | 'tag';
+    position: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
 }
 
 export interface SlideDesign {
   textColor: string;
-  accentColor: string; // New field for decorations
+  accentColor: string; 
+  textBackgroundColor: string; 
+  textBackgroundOpacity: number; 
+  containerStyle: 'none' | 'glass' | 'card' | 'paper' | 'gradient-bottom'; 
   overlayOpacity: number;
   fontSize: 'small' | 'medium' | 'large' | 'xl';
-  font: 'sans' | 'serif' | 'mono' | 'display';
+  font: 'sans' | 'serif' | 'mono' | 'display' | 'custom';
+  customFont?: string; // New: For Google Fonts
+  textWidth: number; // New: Percentage 20-100
   textAlign: 'left' | 'center' | 'right' | 'justify';
   xPosition: number; // 0 to 100 percentage
   yPosition: number; // 0 to 100 percentage
   textEffect: 'none' | 'shadow' | 'neon' | 'outline' | 'bg-highlight' | 'glitch' | 'retro';
   decoration: 'none' | 'circle' | 'square' | 'accent-line' | 'corner-shape' | 'grid' | 'blob' | 'frame';
+  slideNumberDesign?: SlideNumberDesign;
 }
 
 export type CharacterPosition = 

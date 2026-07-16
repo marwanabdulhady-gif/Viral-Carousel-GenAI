@@ -1,10 +1,12 @@
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { CarouselResponse, Slide, CharacterTraits, BrandColors } from "../types";
 
-// Initialize Gemini Client
-// @ts-ignore - Env variable is injected by the sandbox environment
-const apiKey = process.env.API_KEY || '';
-const ai = new GoogleGenAI({ apiKey });
+// Helper to get a fresh instance with the latest API key
+const getAI = () => {
+  // @ts-ignore
+  const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || '';
+  return new GoogleGenAI({ apiKey });
+};
 
 const CAROUSEL_SCHEMA: Schema = {
   type: Type.OBJECT,
@@ -12,15 +14,14 @@ const CAROUSEL_SCHEMA: Schema = {
     carousel_metadata: {
       type: Type.OBJECT,
       properties: {
-        topic: { type: Type.STRING },
+        title: { type: Type.STRING, description: "A short, catchy title for the carousel" },
         visual_style: { type: Type.STRING },
-        target_audience: { type: Type.STRING },
         language: { type: Type.STRING, enum: ['en', 'ar'] },
         tone: { type: Type.STRING },
         dialect: { type: Type.STRING },
         character_description: { type: Type.STRING },
       },
-      required: ["topic", "visual_style", "target_audience", "character_description"],
+      required: ["title", "visual_style", "character_description"],
     },
     slides: {
       type: Type.ARRAY,
@@ -41,42 +42,60 @@ const CAROUSEL_SCHEMA: Schema = {
   required: ["carousel_metadata", "slides"],
 };
 
-export const generateIdeas = async (
-    theme: string, 
-    language: 'en' | 'ar'
-): Promise<{ topic: string, audience: string }> => {
-    const model = "gemini-3-flash-preview";
-    const langPrompt = language === 'ar' ? 'in Arabic' : 'in English';
-    const prompt = `Generate a viral, trending social media topic and a specific target audience based on the theme: "${theme}". Return strictly JSON: { "topic": "...", "audience": "..." } ${langPrompt}.`;
+
+
+export interface CharacterAnalysisResult {
+    brandColors: BrandColors;
+    visualStyle: string;
+    characterRefText: string;
+}
+
+export const analyzeCharacterReference = async (imageBase64: string): Promise<CharacterAnalysisResult> => {
+    const model = "gemini-3.1-pro-preview";
+    const prompt = `Analyze this character reference sheet and extract the following information. Return strictly JSON matching this structure:
+    {
+        "brandColors": {
+            "text": "#HEX", // A color suitable for text or dark elements
+            "accent": "#HEX" // A prominent accent color from the character
+        },
+        "visualStyle": "string", // Choose the closest match from this list: "Minimalist Clean", "Tech Startup", "Corporate Blue", "Modern SaaS", "Swiss International", "Editorial", "Hand Drawn Sketch", "Watercolor", "Pop Art", "Collage", "Doodle Style", "Oil Painting", "Pastel Dream", "3D Claymorphism", "Glassmorphism", "3D Isometric", "Paper Cutout", "Fabric Texture", "Plastic Sheen", "Matte 3D", "Cyberpunk Neon", "Dark Mode Gradient", "Holographic", "Vaporwave", "Neon Noir", "Glowwave", "High Contrast Dark", "Vintage 90s", "Retro 80s", "Bauhaus", "Grunge", "Lo-Fi Aesthetic", "Film Grain", "Noir", "Organic Green", "Earthy Tones", "Botanical", "Soft Gradient", "Warm Beige"
+        "characterRefText": "string" // A highly detailed description of the character's exact visual details (clothing, colors, hairstyle, facial features, and exact art style) to be used as a prompt for image generation.
+    }`;
     
+    const match = imageBase64.match(/^data:(image\/[a-zA-Z+]+);base64,(.+)$/);
+    if (!match) throw new Error("Invalid image format");
+
     try {
-        const response = await ai.models.generateContent({
+        const response = await getAI().models.generateContent({
             model,
-            contents: prompt,
+            contents: [
+                { text: prompt },
+                { inlineData: { mimeType: match[1], data: match[2] } }
+            ],
             config: { responseMimeType: "application/json" }
         });
         const text = response.text || "{}";
-        return JSON.parse(text);
+        return JSON.parse(text) as CharacterAnalysisResult;
     } catch (e) {
-        console.error("Error generating ideas", e);
-        return { topic: "Growth Hacking Strategies", audience: "Startup Founders" };
+        console.error("Error analyzing character reference", e);
+        throw e;
     }
 };
 
 export const generateCarouselScript = async (
-  topic: string,
+  writtenPost: string,
   visualStyle: string,
-  target_audience: string,
   slideCount: number,
   language: 'en' | 'ar',
   tone: string,
   dialect: string,
   useCharacter: boolean,
   aspectRatio: '4:5' | '1:1' | '16:9',
-  characterTraits?: CharacterTraits,
-  brandColors?: BrandColors
+  brandColors?: BrandColors,
+  characterRefImage?: string,
+  characterRefText?: string
 ): Promise<CarouselResponse> => {
-  const model = "gemini-3-flash-preview";
+  const model = "gemini-3.1-pro-preview";
   
   const langInstruction = language === 'ar' 
     ? `Language: Arabic (Dialect/Style: ${dialect || 'Modern Standard Arabic'}). IMPORTANT: Ensure headlines are catchy, short, and strictly in Arabic script. Use culturally relevant metaphors.`
@@ -84,18 +103,26 @@ export const generateCarouselScript = async (
 
   // Build a specific character description based on traits
   let charDescInstructions = "";
-  if (useCharacter && characterTraits) {
-      const baseDesc = `A ${characterTraits.age} ${characterTraits.gender} character, style ${characterTraits.style}, main color ${characterTraits.color_accent}`;
+  if (useCharacter && (characterRefImage || characterRefText)) {
+      let baseDesc = "";
+      if (characterRefText) {
+          baseDesc += `Additional Character Details: ${characterRefText}. `;
+      }
       charDescInstructions = `
-      CRITICAL TASK: You must create a "Visual DNA" for the character based on this brief: "${baseDesc}".
-      In the 'character_description' field, write a VERY detailed, comma-separated physical description that includes:
-      - Exact hair color and style
-      - Specific clothing items and colors
-      - Accessories (glasses, hats, items)
-      - Eye color and distinctive features
-      - Skin tone/Material (if robot/3d)
-      Example: "Cute 3D rendered boy, messy orange hair, wearing a large blue hoodie, oversized round glasses, white sneakers, soft lighting, pixar style."
-      This description will be used to generate CONSISTENT images.
+      CRITICAL: Create a fixed "Visual DNA" for the character.
+      You MUST analyze the provided character reference image carefully. Extract its EXACT visual details (clothing, colors, hairstyle, facial features, and exact art style).
+      ${baseDesc}
+      In 'character_description', write a highly detailed prompt that defines these IMMUTABLE traits to ensure 100% consistency across multiple images.
+      Include:
+      1. Precise Hairstyle & Color
+      2. Exact Outfit & Colors
+      3. Face/Body Features
+      4. Exact Art Style keywords matching the reference image.
+      `;
+  } else if (useCharacter) {
+      charDescInstructions = `
+      CRITICAL: Create a fixed "Visual DNA" for a generic character.
+      In 'character_description', write a highly detailed prompt that defines IMMUTABLE traits to ensure consistency.
       `;
   } else {
       charDescInstructions = `Leave 'character_description' empty. Set 'include_character' to false.`;
@@ -106,7 +133,6 @@ export const generateCarouselScript = async (
     Objective: Generate a viral ${slideCount}-slide carousel.
     
     ${langInstruction}
-    Target Audience: ${target_audience}
     Tone: ${tone}
     Visual Style: ${visualStyle}
     Aspect Ratio: ${aspectRatio}
@@ -122,12 +148,27 @@ export const generateCarouselScript = async (
     - In 'visual_description', describe the scene layout. Keep it compatible with the character interacting with it.
   `;
 
-  const prompt = `Topic: ${topic}. Slides: ${slideCount}.`;
+  let prompt = `Analyze the following written post and convert it into a highly engaging, viral carousel script with ${slideCount} slides:\n\n"${writtenPost}"`;
+
+  const contents: any[] = [{ text: prompt }];
+
+  if (useCharacter && characterRefImage) {
+      // Extract base64 and mime type
+      const match = characterRefImage.match(/^data:(image\/[a-zA-Z+]+);base64,(.+)$/);
+      if (match) {
+          contents.push({
+              inlineData: {
+                  mimeType: match[1],
+                  data: match[2]
+              }
+          });
+      }
+  }
 
   try {
-    const response = await ai.models.generateContent({
+    const response = await getAI().models.generateContent({
       model,
-      contents: prompt,
+      contents,
       config: {
         systemInstruction,
         responseMimeType: "application/json",
@@ -154,14 +195,23 @@ export const generateCarouselScript = async (
       design: {
         textColor: brandColors?.text || '#ffffff',
         accentColor: brandColors?.accent || '#3b82f6', 
+        textBackgroundColor: '#000000', 
+        textBackgroundOpacity: 0, 
+        containerStyle: 'none', // Default
         overlayOpacity: 10, 
         fontSize: 'medium',
         font: 'sans',
         textAlign: language === 'ar' ? 'right' : 'left', // Initialize based on language
         xPosition: 50, // Center
         yPosition: 10, // Top area
+        textWidth: 85, // Default width percentage
         textEffect: 'shadow',
-        decoration: 'none'
+        decoration: 'none',
+        slideNumberDesign: {
+            show: true,
+            style: 'minimal',
+            position: language === 'ar' ? 'top-right' : 'top-left'
+        }
       }
     }));
 
@@ -170,8 +220,8 @@ export const generateCarouselScript = async (
     data.carousel_metadata.tone = tone;
     data.carousel_metadata.dialect = dialect;
     data.carousel_metadata.aspect_ratio = aspectRatio;
-    data.carousel_metadata.character_traits = characterTraits;
     data.carousel_metadata.brand_colors = brandColors;
+    data.carousel_metadata.personal_branding = { name: '', handle: '', enabled: false };
 
     return {
         ...data,
@@ -190,7 +240,7 @@ export const generateSlideImage = async (
   slide: Slide,
   metadata: any
 ): Promise<string> => {
-  const model = "gemini-2.5-flash-image";
+  const model = "gemini-3.1-flash-image-preview";
   
   let characterPromptPart = "";
   
@@ -215,10 +265,14 @@ export const generateSlideImage = async (
          const expressionMod = s.expression ? `Expression: ${s.expression}.` : '';
 
          // Construct a Prompt that emphasizes the DNA
+         // STRICT CONSISTENCY PATTERN
          characterPromptPart = `
-         MAIN SUBJECT (Maintain Consistency): ${globalCharDNA}.
-         ACTION: ${customAction}. ${expressionMod}
-         PLACEMENT: The subject is at ${s.scale} scale, located in the ${posStr}. ${styleMods}
+         *** CHARACTER REFERENCE SHEET (MUST MATCH EXACTLY) ***
+         Visual DNA: ${globalCharDNA}.
+         
+         *** CURRENT SCENE ACTION ***
+         Action: ${customAction}. ${expressionMod}
+         Camera/Framing: Subject is at ${s.scale} scale, positioned in the ${posStr}. ${styleMods}
          `;
       }
   }
@@ -227,11 +281,14 @@ export const generateSlideImage = async (
   const aspectRatioPrompt = ar === '1:1' ? 'Square Aspect Ratio 1:1' : ar === '16:9' ? 'Wide Aspect Ratio 16:9' : 'Vertical Aspect Ratio 4:5';
 
   const imagePrompt = `
-    Create a social media background image (${aspectRatioPrompt}).
+    Task: Generate a high-quality social media background image (${aspectRatioPrompt}).
+    
     Visual Style: ${metadata.visual_style}.
-    Background Scene: ${slide.visual_description}.
+    Environment/Background: ${slide.visual_description}.
+    
     ${characterPromptPart}
-    Constraint: NO TEXT in the image. High quality, aesthetic, clean background.
+    
+    Constraint: NO TEXT in the image. Pure visual art.
   `;
 
   // Determine Aspect Ratio for API
@@ -239,10 +296,17 @@ export const generateSlideImage = async (
   if (ar === '1:1') apiAspectRatio = "1:1";
   if (ar === '16:9') apiAspectRatio = "16:9";
 
+  const contents: any[] = [{ text: imagePrompt }];
+
+  // DO NOT pass the character reference image to the image generation model.
+  // Passing an image turns the request into an "image editing" task, which will just
+  // return an edited version of the reference sheet instead of generating a new scene.
+  // We rely entirely on the highly detailed "Visual DNA" text prompt for consistency.
+
   try {
-    const response = await ai.models.generateContent({
+    const response = await getAI().models.generateContent({
       model,
-      contents: { parts: [{ text: imagePrompt }] },
+      contents: { parts: contents },
       config: {
           imageConfig: {
               aspectRatio: apiAspectRatio as any
